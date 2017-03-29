@@ -1,14 +1,17 @@
 # -*-coding: utf-8
 import re
 import json
+import time
 import hashlib
 import urllib2
-import itertools
 import urlparse
+import itertools
+import threading
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
-from setting import db_host, db_port
 from datetime import datetime, timedelta
+from setting import db_host, db_port, max_thread
+
 
 
 def download(url,num_retires = 2):
@@ -28,7 +31,10 @@ def download(url,num_retires = 2):
     conn.setitem(url, html)
     return html
 
-def crawler(links):
+def crawler(link, regex):
+    html = download(link)
+    soup = BeautifulSoup(html,'lxml')
+    links = get_links(link, soup, regex)
     for link in links:
         for page in itertools.count(1):
             url = link + "/d%dp22" % page
@@ -51,7 +57,7 @@ def crawler(links):
                         'metro': metro_list[0].string,
                         'station': metro_list[1].string,
                         'rights': house.select('span.taxfree-ex > span')[0].string,
-                        'createtime': '%s' % datetime.now()
+                        'createtime': datetime.now()
                     }
                 except:
                     continue
@@ -59,7 +65,7 @@ def crawler(links):
                 print msg
 
 
-def get_links(url, regex):
+def get_links(url, soup, regex):
     links = soup.find_all(name="a")
     link_list = []
     for link in links:
@@ -88,7 +94,8 @@ class MongoCache:
         self.db.webpage.update({'_id': url}, {'$set': record}, upsert=True)
 
     def insert_house(self,msg):
-        hash_key = hash_value(msg)
+        string = msg['xiaoqu']+msg['price']+msg['pingfang']+msg['per']+msg['location']+msg['metro']+msg['station']+msg['rights']
+        hash_key = hash_value(string)
         self.db.house.update({'_id': hash_key}, {'$set': msg}, upsert=True)
 
 def hash_value(msg):
@@ -107,7 +114,7 @@ def multidownloader(links):
 
 
 if __name__ == "__main__":
-    #For All Lines
+    # #For All Lines
     threads = []
     conn = MongoCache()
     stime = datetime.now()
@@ -115,12 +122,19 @@ if __name__ == "__main__":
     html = download(seed_url)
     soup = BeautifulSoup(html,'lxml')
     regex = r'li\d+$'
-    links = get_links(seed_url,regex)
-    for link in links:
+    links = get_links(seed_url, soup, regex)
+
+    while links or threads:
         regex = r'li\d+s\d+'
-        html = download(link)
-        soup = BeautifulSoup(html,'lxml')
-        links= get_links(link, regex)
-        crawler(links)
-    time_duration = datetime.now() - stime
-    print time_duration
+        for thread in threads:
+            if not thread.is_alive():
+                threads.remove(thread)
+
+        while len(threads) < max_thread and links:
+            link = links.pop()
+            thread = threading.Thread(target=crawler, args=(link, regex,))
+            thread.setDaemon(True)
+            thread.start()
+            threads.append(thread)
+        time.sleep(1)
+
